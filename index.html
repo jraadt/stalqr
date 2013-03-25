@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en" class="ui-mobile-rendering">
+<head>
+  <meta charset="utf-8"/>
+  <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>STALQR</title>
+
+  <link href="/css/reset.css" rel="stylesheet"/>
+  <link href="/css/jquery.ui.css" rel="stylesheet"/>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/js/jquery.js"></script>
+  <script src="/js/jquery.ui.js"></script>
+  <script src="/js/underscore.js"></script>
+
+  <style type="text/css">
+    #wrapper {
+      position: relative;
+      display: block;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    #frame {
+      position: absolute;
+      top: 0;
+      height: 0;
+      z-index: 100;
+    }
+
+    #faces {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 200;
+    }
+
+    .face {
+      position: absolute;
+      cursor: pointer;
+      border: 1px solid #FF0000;
+    }
+
+    .face>div {
+      margin-top: -20px;
+      height: 20px;
+      background-color: #FF0000;
+      padding: 2px 3px 2px 3px;
+      color: #ffffff;
+      font-size: 11px;
+    }
+
+    #fps {
+      position: absolute;
+      bottom: 0;
+      right: 0;
+      background: #ffffff;
+      padding: 5px;
+      z-index: 300;
+    }
+    
+    .ui-widget-overlay {
+      z-index: 1000;
+    }
+    
+    .ui-dialog {
+      z-index: 1001;
+    }
+    
+    .ui-dialog-titlebar {
+      display: none;
+    }
+    
+    #snapshot {
+      width: 100%;
+    }
+
+    #classify-identifier {
+      border: none;
+    }
+  </style>
+
+</head>
+
+<body>
+
+<div id="wrapper">
+  <img src="" id="frame"/>
+  <div id="faces"></div>
+  <div id="fps"></div>
+</div>
+
+<script type="text/javascript">
+
+  var ui = { };
+
+  var frameData = {
+    width: 0,
+    height: 0,
+    ratio: 1
+  };
+
+  var fps = {
+    frameCount: 0,
+    frames: []
+  };
+
+  $(document).ready(function () {
+    ui.frame = $("#frame");
+    ui.faces = $("#faces");
+
+    var socket = io.connect('http://localhost');
+
+    socket.on("frameUpdate", function (data) {
+      ui.frame.attr("src", "data:image/jpg;base64,"+byteArrayToBase64(data.image));
+
+      if (frameData.width != data.width || frameData.height != data.height) {
+        frameData.width = data.width;
+        frameData.height = data.height;
+        frameResize();
+      }
+
+      if (data.faces != undefined) {
+        ui.faces.empty();
+
+        var faceHtml = "";
+        for (var a in data.faces) {
+          var face = data.faces[a];
+          faceHtml += "<div class=\"face\" style=\"top: "+(face.y * frameData.ratio)+"px; left: "+(face.x * frameData.ratio)+"px; width: "+(face.width * frameData.ratio)+"px; height: "+(face.height * frameData.ratio)+"px;\">";
+          if (face.id != undefined && face.id >= 0 && face.confidence < 500 && face.name != undefined && face.name.length) {
+            faceHtml += "<div>"+face.name+" ("+face.confidence+")</div>";
+          }
+          faceHtml += "</div>";
+        }
+
+        ui.faces.append(faceHtml);
+      }
+
+      fps.frameCount++;
+    });
+
+    socket.on("snapshot", function(data) {
+      ui.classify.dialog("open");
+      ui.classify.find("#snapshot").attr("src", "data:image/jpg;base64,"+byteArrayToBase64(data.image));
+    });
+
+    ui.classify = $("<div id=\"classify-dialog\"><img src=\"\" id=\"snapshot\"/><div><span class=\"font-size: 18px;\">&raquo;</span> <input type=\"text\" id=\"classify-identifier\"/></div>").dialog({
+      modal: true,
+      autoOpen: false,
+      width: 250,
+      open: function() {
+        $("#classify-identifier").focus().keypress(function(e) {
+          if ((e.keyCode || e.which) == 13) {
+            var base64Image = ui.classify.find("#snapshot").attr("src");
+            base64Image = base64Image.substring(base64Image.indexOf(",")+1);
+            socket.emit("identify", {name: this.value, snapshot: base64ToByteArray(base64Image)});
+            ui.classify.dialog("close");
+          }
+        });
+      },
+      close: function(e, ui) {
+        $("#classify-identifier").val("");
+      }
+    });
+
+    $(document).on("click", function(e) {
+      if (ui.classify.is(":hidden")) {
+        socket.emit("classify", {x: e.pageX / frameData.ratio, y: e.pageY / frameData.ratio});
+      }
+    });
+
+    window.setInterval(function() {
+      fps.frames.push(fps.frameCount);
+      fps.frameCount = 0;
+      if (fps.frames.length > 5)
+        fps.frames = fps.frames.slice(fps.frames.length - 5);
+
+      var totalFrames = 0;
+      for (var i in fps.frames) {
+        totalFrames += fps.frames[i];
+      }
+
+      $("#fps").text((totalFrames/fps.frames.length));
+    }, 1000);
+
+    $(window).resize(_.debounce(function(){
+      frameResize();
+    },500));
+  });
+
+  function frameResize() {
+    var ratio = Math.max($(window).width() / frameData.width, $(window).height() / frameData.height);
+    frameData.ratio = ratio;
+    ui.frame.width((frameData.width * ratio)+"px");
+    ui.frame.height((frameData.height * ratio)+"px");
+  }
+
+
+
+  // https://github.com/beatgammit/base64-js
+	var lookup = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+	function base64ToByteArray(b64) {
+		var i, l, tmp, hasPadding, arr = [];
+
+		if (i % 4 > 0) {
+			throw 'Invalid string. Length must be a multiple of 4';
+		}
+
+		hasPadding = /=$/.test(b64);
+
+		l = hasPadding ? b64.length - 4: b64.length;
+
+		for (i = 0; i < l; i += 4) {
+			tmp = (lookup.indexOf(b64[i]) << 18) | (lookup.indexOf(b64[i + 1]) << 12) | (lookup.indexOf(b64[i + 2]) << 6) | lookup.indexOf(b64[i + 3]);
+			arr.push((tmp & 0xFF0000) >> 16);
+			arr.push((tmp & 0xFF00) >> 8);
+			arr.push(tmp & 0xFF);
+		}
+
+		if (hasPadding) {
+			b64 = b64.substring(i, b64.indexOf('='));
+
+			if (b64.length === 2) {
+				tmp = (lookup.indexOf(b64[0]) << 2) | (lookup.indexOf(b64[1]) >> 4);
+				arr.push(tmp & 0xFF);
+			} else {
+				tmp = (lookup.indexOf(b64[0]) << 10) | (lookup.indexOf(b64[1]) << 4) | (lookup.indexOf(b64[2]) >> 2);
+				arr.push((tmp >> 8) & 0xFF);
+				arr.push(tmp & 0xFF);
+			}
+		}
+
+		return arr;
+	}
+
+	function byteArrayToBase64(uint8) {
+		var i,
+			extraBytes = uint8.length % 3, // if we have 1 byte left, pad 2 bytes
+			output = "",
+			temp, length;
+
+		function tripletToBase64 (num) {
+			return lookup[num >> 18 & 0x3F] + lookup[num >> 12 & 0x3F] + lookup[num >> 6 & 0x3F] + lookup[num & 0x3F];
+		};
+
+		// go through the array every three bytes, we'll deal with trailing stuff later
+		for (i = 0, length = uint8.length - extraBytes; i < length; i += 3) {
+			temp = (uint8[i] << 16) + (uint8[i + 1] << 8) + (uint8[i + 2]);
+			output += tripletToBase64(temp);
+		}
+
+		// pad the end with zeros, but make sure to not forget the extra bytes
+		switch (extraBytes) {
+			case 1:
+				temp = uint8[uint8.length - 1];
+				output += lookup[temp >> 2];
+				output += lookup[(temp << 4) & 0x3F];
+				output += '==';
+				break;
+			case 2:
+				temp = (uint8[uint8.length - 2] << 8) + (uint8[uint8.length - 1]);
+				output += lookup[temp >> 10];
+				output += lookup[(temp >> 4) & 0x3F];
+				output += lookup[(temp << 2) & 0x3F];
+				output += '=';
+				break;
+		}
+
+		return output;
+	}
+</script>
+
+</body>
+</html>
